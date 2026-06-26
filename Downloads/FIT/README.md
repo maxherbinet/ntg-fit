@@ -19,7 +19,8 @@ Requires Python 3.7+.
 ```bash
 python3 -m venv env
 source env/bin/activate        # Windows: env\Scripts\activate
-pip install click requests requests_toolbelt selenium
+pip install -r requirements.txt
+playwright install chromium
 ```
 
 ## Usage
@@ -78,5 +79,4 @@ A summary line is always printed at the end of each test regardless of verbosity
 
 ## Known limitations
 
-- `webtraffic` requires a headless Chrome binary and ChromeDriver to be installed separately. Without them the command will fail on startup.
 - `iprep` uses `telnet` on port 443, which some corporate networks block outright — connections may appear as `[BLOCKED]` even without a firewall policy matching the IP.

@@ -17,8 +17,7 @@ with warnings.catch_warnings():
     import telnetlib
 
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
-from selenium import webdriver
-import selenium
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 import platform
 
 BASE_DIR = Path(__file__).parent
@@ -26,7 +25,7 @@ BASE_DIR = Path(__file__).parent
 # disable warnings in requests for cert bypass
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-__version__ = 0.18
+__version__ = 0.19
 
 # some console colours
 W = '\033[0m'  # white (normal)
@@ -373,35 +372,44 @@ def webtraffic(verbose):
 
 
 def _webtraffic(verbose=False):
-    driver = webdriver.PhantomJS()
-    driver.set_window_size(1920, 1080)
-    driver.set_page_load_timeout(10)
-
     print(G + "[+] " + W + "Web traffic trigger")
     print(G + "[+] " + W + "Fetching traffic list...", end=" ", flush=True)
     lines = _read_csv(BASE_DIR / "goodurl.csv")
     if lines is None:
-        driver.quit()
         return
     print("Done")
 
     data = [line for line in lines.split("\n") if line.strip()]
 
     responded = failed = 0
-    with _progress(data, verbose) as urls:
-        for url in urls:
-            target = "http://www.%s" % url
-            try:
-                driver.get(target)
-                responded += 1
-                if verbose:
-                    print(G + "  [LOADED]  " + W + target)
-            except selenium.common.exceptions.TimeoutException:
-                failed += 1
-                if verbose:
-                    print(O + "  [TIMEOUT] " + W + target)
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_default_navigation_timeout(10000)
 
-    driver.quit()
+            with _progress(data, verbose) as urls:
+                for url in urls:
+                    target = "http://www.%s" % url
+                    try:
+                        page.goto(target, wait_until="domcontentloaded")
+                        responded += 1
+                        if verbose:
+                            print(G + "  [LOADED]  " + W + target)
+                    except PlaywrightTimeoutError:
+                        failed += 1
+                        if verbose:
+                            print(O + "  [TIMEOUT] " + W + target)
+                    except Exception:
+                        failed += 1
+                        if verbose:
+                            print(O + "  [FAILED]  " + W + target)
+
+            browser.close()
+    except Exception as e:
+        print(R + "[!] " + W + f"Browser failed to start: {e}")
+        return
+
     _print_summary("Web Traffic", responded, failed)
 
 
