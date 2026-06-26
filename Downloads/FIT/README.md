@@ -11,6 +11,7 @@ A command-line tool that generates real network traffic to verify your firewall 
 | `wf` | Requests URLs across categories to trigger web filtering policies |
 | `webtraffic` | Simulates legitimate browser traffic using headless Chrome |
 | `all` | Runs all of the above in sequence |
+| `update` | Refresh `malware_urls.csv` and `goodurl.csv` from public sources |
 
 ## Installing
 
@@ -76,6 +77,21 @@ In verbose mode (`-v`), each request is labelled:
   - `[FAILED]` in orange — request failed (connectivity issue)
 
 A summary line is always printed at the end of each test regardless of verbosity.
+
+## Keeping threat lists current
+
+Run `fit update` periodically to refresh the bundled lists:
+
+```bash
+fit update
+```
+
+| File | Source | Notes |
+|---|---|---|
+| `malware_urls.csv` | [URLhaus](https://urlhaus.abuse.ch) (abuse.ch) | Updated automatically |
+| `goodurl.csv` | [Tranco](https://tranco-list.eu) top 500 | Updated automatically |
+| `appctrl.csv` | Curated manually | No public source — edit by hand |
+| `wf.csv` | Curated manually | No public source — edit by hand |
 
 ## Known limitations
 

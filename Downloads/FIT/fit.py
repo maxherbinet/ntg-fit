@@ -8,6 +8,9 @@ import warnings
 import socket
 import random
 import sys
+import csv
+import io
+import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -25,7 +28,7 @@ BASE_DIR = Path(__file__).parent
 # disable warnings in requests for cert bypass
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-__version__ = 0.19
+__version__ = 0.20
 
 # some console colours
 W = '\033[0m'  # white (normal)
@@ -67,10 +70,10 @@ def _print_summary(label, responded, failed):
     )
 
 
-def _fetch_feed(url, label, **kwargs):
+def _fetch_feed(url, label, timeout=10, **kwargs):
     """Fetch a remote feed URL; print a friendly error and return None on failure."""
     try:
-        r = requests.get(url, verify=False, timeout=10, **kwargs)
+        r = requests.get(url, verify=False, timeout=timeout, **kwargs)
         r.raise_for_status()
         return r
     except requests.exceptions.RequestException as e:
@@ -87,6 +90,47 @@ def _read_csv(path):
     except OSError as e:
         print(R + "[!] " + W + f"Cannot read {path.name}: {e}")
         return None
+
+
+def _update():
+    '''Refresh malware URL and good URL lists from public sources.'''
+    # ── malware_urls.csv from URLhaus ─────────────────────────────────────
+    # Format: plain text, one full URL per line, lines starting with # are comments
+    print(G + "[+] " + W + "Updating malware_urls.csv from URLhaus...", end=" ", flush=True)
+    r = _fetch_feed("https://urlhaus.abuse.ch/downloads/text/", "URLhaus malware feed")
+    if r is not None:
+        urls = [l for l in r.text.split("\n") if l.strip() and not l.startswith("#")]
+        if urls:
+            (BASE_DIR / "malware_urls.csv").write_text("\n".join(urls) + "\n")
+            print(f"Done ({len(urls)} URLs)")
+        else:
+            print()
+            print(R + "[!] " + W + "URLhaus returned an empty list — file not updated")
+
+    # ── goodurl.csv from Tranco top 500 ──────────────────────────────────
+    # Format: zip containing top-1m.csv with "rank,domain" rows
+    print(G + "[+] " + W + "Updating goodurl.csv from Tranco top 500...", end=" ", flush=True)
+    r2 = _fetch_feed("https://tranco-list.eu/top-1m.csv.zip", "Tranco list", timeout=30)
+    if r2 is not None:
+        try:
+            z = zipfile.ZipFile(io.BytesIO(r2.content))
+            with z.open(z.namelist()[0]) as zf:
+                reader = csv.reader(io.TextIOWrapper(zf))
+                domains = [row[1] for i, row in enumerate(reader) if i < 500 and len(row) >= 2]
+            if domains:
+                (BASE_DIR / "goodurl.csv").write_text("\n".join(domains) + "\n")
+                print(f"Done ({len(domains)} domains)")
+            else:
+                print()
+                print(R + "[!] " + W + "Tranco list parsed but empty — file not updated")
+        except Exception as e:
+            print()
+            print(R + "[!] " + W + f"Failed to parse Tranco list: {e}")
+
+    # ── manual lists ──────────────────────────────────────────────────────
+    print()
+    print(O + "[!] " + W + "appctrl.csv and wf.csv are curated lists with no public source.")
+    print(O + "[!] " + W + "Update them manually as needed.")
 
 
 def banner():
@@ -282,7 +326,7 @@ def _malwareurls(srcip, verbose=False):
     responded = failed = 0
     with _progress(data, verbose) as urls:
         for url in urls:
-            target = "http://" + url
+            target = url if url.startswith(("http://", "https://")) else "http://" + url
             try:
                 if len(srcip) > 0:
                     setsrcip(srcip).get(target, timeout=1)
@@ -411,6 +455,12 @@ def _webtraffic(verbose=False):
         return
 
     _print_summary("Web Traffic", responded, failed)
+
+
+@cli.command()
+def update():
+    '''Refresh malware URL and good URL lists from public sources'''
+    _update()
 
 
 if __name__ == '__main__':
