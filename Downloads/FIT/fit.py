@@ -7,10 +7,13 @@ import requests_toolbelt
 import telnetlib
 import socket
 import random
+from pathlib import Path
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 from selenium import webdriver
 import selenium
 import platform
+
+BASE_DIR = Path(__file__).parent
 
 # disable warnings in requests for cert bypass
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
@@ -115,9 +118,10 @@ def all(repeat, srcip):
         _vxvault(srcip)
         _malwareurls(srcip)
         _appctrl()
+        _wf()
         _webtraffic()
-        if repeat == False:
-            exit()
+        if not repeat:
+            break
 
 
 @cli.command()
@@ -205,8 +209,8 @@ def _malwareurls(srcip):
     print(G + "[+] " + W + "Malware URL Downloads")
     print(G + "[+] " + W + "Fetching Malware URL list...", end=" ")
     # r = requests.get("http://vxvault.net/URL_List.php", timeout=1)
-    f = open("malware_urls.csv", 'r')
-    lines = f.read()
+    with open(BASE_DIR / "malware_urls.csv", 'r') as f:
+        lines = f.read()
     print("Done")
 
     if len(srcip) > 0:
@@ -232,11 +236,11 @@ def appctrl():
 
 def _appctrl():
     ''' Trigger application control '''
-    print(G + "[+] " + W + "Application Congtrol")
+    print(G + "[+] " + W + "Application Control")
     print(G + "[+] " + W + "Fetching AppCtrl list...", end=" ")
     # r = requests.get("http://vxvault.net/URL_List.php", timeout=1)
-    f = open("appctrl.csv", 'r')
-    lines = f.read()
+    with open(BASE_DIR / "appctrl.csv", 'r') as f:
+        lines = f.read()
     print("Done")
 
     lines = lines.split("\n")
@@ -260,8 +264,8 @@ def _wf():
     print(G + "[+] " + W + "WF categorisation trigger")
     print(G + "[+] " + W + "Fetching URL list...", end=" ")
     # r = requests.get("http://vxvault.net/URL_List.php", timeout=1)
-    f = open("wf.csv", 'r')
-    lines = f.read()
+    with open(BASE_DIR / "wf.csv", 'r') as f:
+        lines = f.read()
     print("Done")
 
     lines = lines.split("\n")
@@ -287,8 +291,8 @@ def _webtraffic():
     print(G + "[+] " + W + "Web traffic trigger")
     print(G + "[+] " + W + "Fetching traffic list...", end=" ")
     # r = requests.get("http://vxvault.net/URL_List.php", timeout=1)
-    f = open("goodurl.csv", 'r')
-    lines = f.read()
+    with open(BASE_DIR / "goodurl.csv", 'r') as f:
+        lines = f.read()
     print("Done")
 
     lines = lines.split("\n")
