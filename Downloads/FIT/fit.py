@@ -7,13 +7,15 @@ import requests_toolbelt
 import warnings
 import socket
 import random
+import sys
 from contextlib import contextmanager
+from pathlib import Path
 
 # telnetlib is deprecated in Python 3.11 and removed in 3.13
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
     import telnetlib
-from pathlib import Path
+
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 from selenium import webdriver
 import selenium
@@ -24,7 +26,7 @@ BASE_DIR = Path(__file__).parent
 # disable warnings in requests for cert bypass
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-__version__ = 0.17
+__version__ = 0.18
 
 # some console colours
 W = '\033[0m'  # white (normal)
@@ -66,6 +68,28 @@ def _print_summary(label, responded, failed):
     )
 
 
+def _fetch_feed(url, label, **kwargs):
+    """Fetch a remote feed URL; print a friendly error and return None on failure."""
+    try:
+        r = requests.get(url, verify=False, timeout=10, **kwargs)
+        r.raise_for_status()
+        return r
+    except requests.exceptions.RequestException as e:
+        print()  # newline after the trailing "..." on the fetch line
+        print(R + "[!] " + W + f"Failed to fetch {label}: {e}")
+        return None
+
+
+def _read_csv(path):
+    """Read a local CSV file; print a friendly error and return None on failure."""
+    try:
+        with open(path, 'r') as f:
+            return f.read()
+    except OSError as e:
+        print(R + "[!] " + W + f"Cannot read {path.name}: {e}")
+        return None
+
+
 def banner():
     '''Print stylized banner'''
     print(r"""
@@ -90,13 +114,12 @@ Author: Alex Harvey, @meshmeld""")
 
 
 def checkconnection():
-    ''' check network connection '''
+    '''Check network connection.'''
     try:
-        r = requests.get("https://www.google.ca", verify=False)
-    except:
+        requests.get("https://www.google.ca", verify=False, timeout=5)
+    except requests.exceptions.RequestException:
         return False
-    else:
-        return True
+    return True
 
 
 def checkips(srcip):
@@ -106,11 +129,11 @@ def checkips(srcip):
             print(G + "[+] " + W + "Source IP Address " + ipaddr)
         except socket.error:
             print(R + "[-] " + W + "IP Address " + ipaddr + " is not valid")
-            exit(-1)
+            sys.exit(1)
 
 
 def setsrcip(srcip):
-    ''' Set a random source ip from a list '''
+    '''Set a random source ip from a list.'''
     ip = random.choice(srcip)
     s = requests.Session()
     s.mount("http://", requests_toolbelt.adapters.source.SourceAddressAdapter(ip))
@@ -126,7 +149,7 @@ def cli():
     else:
         print(R + "[!] " + W + "Network connection failed")
         print(R + "[!] " + W + "Please verify the network connection")
-        exit(-1)
+        sys.exit(1)
 
 
 @cli.command()
@@ -163,12 +186,13 @@ def _iprep(srcip, verbose=False):
     '''IP Reputation test using Feodo Tracker botnet C2 IP blocklist'''
     # https://feodotracker.abuse.ch/downloads/ipblocklist.txt
     print(G + "[+] " + W + "IP Reputation Test")
-    print(G + "[+] " + W + "Fetching bad ip list...", end=" ")
-    r = requests.get("https://feodotracker.abuse.ch/downloads/ipblocklist.txt", verify=False)
+    print(G + "[+] " + W + "Fetching bad ip list...", end=" ", flush=True)
+    r = _fetch_feed("https://feodotracker.abuse.ch/downloads/ipblocklist.txt", "IP blocklist")
+    if r is None:
+        return
     print("Done")
 
     data = [line for line in r.text.split("\n") if len(line) > 1 and line[0] != "#"]
-
     if not data:
         print(R + "[!] " + W + "IP blocklist is empty — check feed URL or network")
         return
@@ -177,11 +201,11 @@ def _iprep(srcip, verbose=False):
     with _progress(data, verbose) as ips:
         for ip in ips:
             try:
-                tn = telnetlib.Telnet(ip, 443, 1)
+                telnetlib.Telnet(ip, 443, 1)
                 responded += 1
                 if verbose:
                     print(R + "  [NOT BLOCKED] " + W + ip + ":443")
-            except (socket.timeout, socket.error, ConnectionRefusedError):
+            except (socket.timeout, socket.error, ConnectionRefusedError, EOFError):
                 failed += 1
                 if verbose:
                     print(G + "  [BLOCKED]     " + W + ip + ":443")
@@ -201,27 +225,32 @@ def _vxvault(srcip, verbose=False):
     '''Malware samples download from vxvault'''
     # http://vxvault.net/URL_List.php
     print(G + "[+] " + W + "VX Vault Malware Downloads")
-    print(G + "[+] " + W + "Fetching VXVault list...", end=" ")
-    r = requests.get("http://vxvault.net/URL_List.php", timeout=10)
+    print(G + "[+] " + W + "Fetching VXVault list...", end=" ", flush=True)
+    r = _fetch_feed("http://vxvault.net/URL_List.php", "VXVault list")
+    if r is None:
+        return
     print("Done")
 
     if len(srcip) > 0:
         print(G + "[+] " + W + "Multi source IP mode enabled")
 
     data = [line for line in r.text.split("\r\n") if len(line) > 1 and line[0] == "h"]
+    if not data:
+        print(R + "[!] " + W + "VXVault list is empty — check feed URL or network")
+        return
 
     responded = failed = 0
     with _progress(data, verbose) as urls:
         for url in urls:
             try:
                 if len(srcip) > 0:
-                    r = setsrcip(srcip).get(url, timeout=1)
+                    setsrcip(srcip).get(url, timeout=1)
                 else:
-                    r = requests.get(url, timeout=1)
+                    requests.get(url, timeout=1)
                 responded += 1
                 if verbose:
                     print(R + "  [NOT BLOCKED] " + W + url)
-            except requests.exceptions.RequestException:
+            except (requests.exceptions.RequestException, OSError):
                 failed += 1
                 if verbose:
                     print(G + "  [BLOCKED]     " + W + url)
@@ -232,17 +261,18 @@ def _vxvault(srcip, verbose=False):
 @click.option('--verbose', '-v', is_flag=True, default=False, help='Show each request result')
 @click.option('--srcip', '-s', multiple=True)
 def malwareurls(verbose, srcip):
-    '''  Malware URl/Domain test '''
+    '''Malware URL/Domain test'''
     checkips(srcip)
     _malwareurls(srcip, verbose)
 
 
 def _malwareurls(srcip, verbose=False):
-    '''  Malware URl/Domain test '''
+    '''Malware URL/Domain test'''
     print(G + "[+] " + W + "Malware URL Downloads")
-    print(G + "[+] " + W + "Fetching Malware URL list...", end=" ")
-    with open(BASE_DIR / "malware_urls.csv", 'r') as f:
-        lines = f.read()
+    print(G + "[+] " + W + "Fetching Malware URL list...", end=" ", flush=True)
+    lines = _read_csv(BASE_DIR / "malware_urls.csv")
+    if lines is None:
+        return
     print("Done")
 
     if len(srcip) > 0:
@@ -256,13 +286,13 @@ def _malwareurls(srcip, verbose=False):
             target = "http://" + url
             try:
                 if len(srcip) > 0:
-                    r = setsrcip(srcip).get(target, timeout=1)
+                    setsrcip(srcip).get(target, timeout=1)
                 else:
-                    r = requests.get(target, timeout=1)
+                    requests.get(target, timeout=1)
                 responded += 1
                 if verbose:
                     print(R + "  [NOT BLOCKED] " + W + target)
-            except requests.exceptions.RequestException:
+            except (requests.exceptions.RequestException, OSError):
                 failed += 1
                 if verbose:
                     print(G + "  [BLOCKED]     " + W + target)
@@ -272,16 +302,17 @@ def _malwareurls(srcip, verbose=False):
 @cli.command()
 @click.option('--verbose', '-v', is_flag=True, default=False, help='Show each request result')
 def appctrl(verbose):
-    ''' Trigger application control '''
+    '''Trigger application control'''
     _appctrl(verbose)
 
 
 def _appctrl(verbose=False):
-    ''' Trigger application control '''
+    '''Trigger application control'''
     print(G + "[+] " + W + "Application Control")
-    print(G + "[+] " + W + "Fetching AppCtrl list...", end=" ")
-    with open(BASE_DIR / "appctrl.csv", 'r') as f:
-        lines = f.read()
+    print(G + "[+] " + W + "Fetching AppCtrl list...", end=" ", flush=True)
+    lines = _read_csv(BASE_DIR / "appctrl.csv")
+    if lines is None:
+        return
     print("Done")
 
     data = [line for line in lines.split("\n") if line.strip()]
@@ -290,11 +321,11 @@ def _appctrl(verbose=False):
     with _progress(data, verbose) as urls:
         for url in urls:
             try:
-                r = requests.get(url, timeout=1)
+                requests.get(url, timeout=1)
                 responded += 1
                 if verbose:
                     print(G + "  [SENT]   " + W + url)
-            except requests.exceptions.RequestException:
+            except (requests.exceptions.RequestException, OSError):
                 failed += 1
                 if verbose:
                     print(O + "  [FAILED] " + W + url)
@@ -304,16 +335,17 @@ def _appctrl(verbose=False):
 @cli.command()
 @click.option('--verbose', '-v', is_flag=True, default=False, help='Show each request result')
 def wf(verbose):
-    '''  URL categorisation trigger '''
+    '''URL categorisation trigger'''
     _wf(verbose)
 
 
 def _wf(verbose=False):
-    '''  URL categorisation trigger '''
+    '''URL categorisation trigger'''
     print(G + "[+] " + W + "WF categorisation trigger")
-    print(G + "[+] " + W + "Fetching URL list...", end=" ")
-    with open(BASE_DIR / "wf.csv", 'r') as f:
-        lines = f.read()
+    print(G + "[+] " + W + "Fetching URL list...", end=" ", flush=True)
+    lines = _read_csv(BASE_DIR / "wf.csv")
+    if lines is None:
+        return
     print("Done")
 
     data = [line for line in lines.split("\n") if line.strip()]
@@ -322,11 +354,11 @@ def _wf(verbose=False):
     with _progress(data, verbose) as urls:
         for url in urls:
             try:
-                r = requests.get(url, timeout=1)
+                requests.get(url, timeout=1)
                 responded += 1
                 if verbose:
                     print(G + "  [SENT]   " + W + url)
-            except requests.exceptions.RequestException:
+            except (requests.exceptions.RequestException, OSError):
                 failed += 1
                 if verbose:
                     print(O + "  [FAILED] " + W + url)
@@ -336,7 +368,7 @@ def _wf(verbose=False):
 @cli.command()
 @click.option('--verbose', '-v', is_flag=True, default=False, help='Show each request result')
 def webtraffic(verbose):
-    ''' Generate good web traffic '''
+    '''Generate good web traffic'''
     _webtraffic(verbose)
 
 
@@ -346,9 +378,11 @@ def _webtraffic(verbose=False):
     driver.set_page_load_timeout(10)
 
     print(G + "[+] " + W + "Web traffic trigger")
-    print(G + "[+] " + W + "Fetching traffic list...", end=" ")
-    with open(BASE_DIR / "goodurl.csv", 'r') as f:
-        lines = f.read()
+    print(G + "[+] " + W + "Fetching traffic list...", end=" ", flush=True)
+    lines = _read_csv(BASE_DIR / "goodurl.csv")
+    if lines is None:
+        driver.quit()
+        return
     print("Done")
 
     data = [line for line in lines.split("\n") if line.strip()]
