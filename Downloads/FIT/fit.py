@@ -4,10 +4,15 @@
 import click
 import requests
 import requests_toolbelt
-import telnetlib
+import warnings
 import socket
 import random
 from contextlib import contextmanager
+
+# telnetlib is deprecated in Python 3.11 and removed in 3.13
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    import telnetlib
 from pathlib import Path
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 from selenium import webdriver
@@ -149,20 +154,24 @@ def all(repeat, verbose, srcip):
 @click.option('--verbose', '-v', is_flag=True, default=False, help='Show each request result')
 @click.option('--srcip', '-s', multiple=True)
 def iprep(verbose, srcip):
-    '''IP Reputation test using zeustracker uiplist'''
+    '''IP Reputation test using Feodo Tracker botnet C2 blocklist'''
     checkips(srcip)
     _iprep(srcip, verbose)
 
 
 def _iprep(srcip, verbose=False):
-    '''IP Reputation test using zeustracker uiplist'''
-    # https://zeustracker.abuse.ch/blocklist.php?download=badips
+    '''IP Reputation test using Feodo Tracker botnet C2 IP blocklist'''
+    # https://feodotracker.abuse.ch/downloads/ipblocklist.txt
     print(G + "[+] " + W + "IP Reputation Test")
     print(G + "[+] " + W + "Fetching bad ip list...", end=" ")
-    r = requests.get("https://zeustracker.abuse.ch/blocklist.php?download=badips", verify=False)
+    r = requests.get("https://feodotracker.abuse.ch/downloads/ipblocklist.txt", verify=False)
     print("Done")
 
     data = [line for line in r.text.split("\n") if len(line) > 1 and line[0] != "#"]
+
+    if not data:
+        print(R + "[!] " + W + "IP blocklist is empty — check feed URL or network")
+        return
 
     responded = failed = 0
     with _progress(data, verbose) as ips:
