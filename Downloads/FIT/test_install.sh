@@ -208,12 +208,17 @@ assert (d2 / 'malware_urls.csv').read_text() == 'original\n'
 print('PASS: existing CSVs untouched when feeds are unreachable')
 
 # Both hostname-only and full-URL formats accepted by _malwareurls
+# Mock must handle stream=True probe: needs .raw.read() returning bytes and .close()
 visited = []
 d3 = pathlib.Path(tempfile.mkdtemp())
 (d3 / 'malware_urls.csv').write_text('hostname.com\nhttp://full-url.com/path\n')
 fit.BASE_DIR = d3
 def capture(url, **kw):
-    visited.append(url); return unittest.mock.Mock(status_code=200)
+    visited.append(url)
+    m = unittest.mock.Mock()
+    m.status_code = 200
+    m.raw.read.return_value = b'\x00' * fit._PROBE_READ_SIZE
+    return m
 with unittest.mock.patch.object(fit.requests, 'get', capture):
     with contextlib.redirect_stdout(io.StringIO()):
         fit._malwareurls(())
@@ -289,13 +294,91 @@ assert 'stale IOC' in buf.getvalue()
 print('PASS: _vt_report labels 0-detection results as stale IOC')
 PYEOF
 
+# ── Step 8: granular HTTP probe verdicts ──────────────────────────────────────
+pytest "Step 8 — granular HTTP probe verdicts" <<'PYEOF'
+import importlib.util, unittest.mock, io, contextlib
+import requests as _req
+
+spec = importlib.util.spec_from_file_location("fit", "__FIT__/fit.py")
+fit = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fit)
+
+def make_response(status, body=b''):
+    m = unittest.mock.Mock()
+    m.status_code = status
+    m.raw.read.return_value = body
+    return m
+
+# downloaded: HTTP 200 + full 8 KB body → payload flowing
+r = make_response(200, b'A' * fit._PROBE_READ_SIZE)
+with unittest.mock.patch.object(fit.requests, 'get', return_value=r):
+    v, s, n = fit._probe_url('http://evil.com/malware.exe')
+assert v == 'downloaded' and n == fit._PROBE_READ_SIZE
+print('PASS: 8 KB body → downloaded')
+
+# partial: HTTP 200 + small body → stream cut early
+r = make_response(200, b'MZ' + b'\x00' * 100)
+with unittest.mock.patch.object(fit.requests, 'get', return_value=r):
+    v, s, n = fit._probe_url('http://evil.com/small.exe')
+assert v == 'partial' and 0 < n < fit._PROBE_READ_SIZE
+print('PASS: small body → partial')
+
+# http_block: HTTP 403 → proxy block page
+r = make_response(403, b'Access Denied')
+with unittest.mock.patch.object(fit.requests, 'get', return_value=r):
+    v, s, n = fit._probe_url('http://blocked.com/evil.exe')
+assert v == 'http_block' and s == 403
+print('PASS: HTTP 403 → http_block')
+
+# no_data: HTTP 200 + empty body
+r = make_response(200, b'')
+with unittest.mock.patch.object(fit.requests, 'get', return_value=r):
+    v, s, n = fit._probe_url('http://empty.com/')
+assert v == 'no_data' and n == 0
+print('PASS: empty body → no_data')
+
+# tcp_timeout: ConnectTimeout
+with unittest.mock.patch.object(fit.requests, 'get',
+        side_effect=_req.exceptions.ConnectTimeout()):
+    v, s, n = fit._probe_url('http://firewall-drop.com/')
+assert v == 'tcp_timeout'
+print('PASS: ConnectTimeout → tcp_timeout')
+
+# tcp_block: ConnectionError (non-DNS)
+with unittest.mock.patch.object(fit.requests, 'get',
+        side_effect=_req.exceptions.ConnectionError('Connection refused')):
+    v, s, n = fit._probe_url('http://refused.com/')
+assert v == 'tcp_block'
+print('PASS: ConnectionError → tcp_block')
+
+# dns_block: ConnectionError with DNS-like message
+with unittest.mock.patch.object(fit.requests, 'get',
+        side_effect=_req.exceptions.ConnectionError('getaddrinfo failed')):
+    v, s, n = fit._probe_url('http://nxdomain.invalid/')
+assert v == 'dns_block'
+print('PASS: DNS error → dns_block')
+
+# read_timeout: ReadTimeout
+with unittest.mock.patch.object(fit.requests, 'get',
+        side_effect=_req.exceptions.ReadTimeout()):
+    v, s, n = fit._probe_url('http://stall.com/')
+assert v == 'read_timeout'
+print('PASS: ReadTimeout → read_timeout')
+
+# _PROBE_VERDICT covers all verdict keys returned by _probe_url
+for key in ('dns_block','tcp_block','tcp_timeout','http_block',
+            'read_timeout','no_data','partial','downloaded','error'):
+    assert key in fit._PROBE_VERDICT, f'Missing verdict key: {key}'
+print('PASS: all verdict keys present in _PROBE_VERDICT')
+PYEOF
+
 # ── version check ─────────────────────────────────────────────────────────────
-pytest "Version is 0.21" <<'PYEOF'
+pytest "Version is 0.22" <<'PYEOF'
 import importlib.util
 spec = importlib.util.spec_from_file_location("fit", "__FIT__/fit.py")
 fit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fit)
-assert fit.__version__ == 0.21, f'Expected 0.21, got {fit.__version__}'
+assert fit.__version__ == 0.22, f'Expected 0.22, got {fit.__version__}'
 print(f'PASS: version is {fit.__version__}')
 PYEOF
 
