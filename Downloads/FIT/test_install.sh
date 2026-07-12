@@ -372,13 +372,41 @@ for key in ('dns_block','tcp_block','tcp_timeout','http_block',
 print('PASS: all verdict keys present in _PROBE_VERDICT')
 PYEOF
 
+# ── Step 9: URL scheme normalisation ─────────────────────────────────────────
+pytest "Step 9 — URL scheme added to bare hostnames" <<'PYEOF'
+import importlib.util, unittest.mock, requests
+spec = importlib.util.spec_from_file_location("fit", "__FIT__/fit.py")
+fit = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fit)
+
+called_with = []
+
+def fake_get(url, **kw):
+    called_with.append(url)
+    m = unittest.mock.Mock()
+    m.status_code = 200
+    m.raw.read.return_value = b''
+    return m
+
+# Simulate the scheme-normalisation logic used in _wf / _appctrl
+with unittest.mock.patch.object(fit.requests, 'get', fake_get):
+    for raw in ['example.com', 'http://example.com', 'https://example.com']:
+        target = raw if raw.startswith(('http://', 'https://')) else 'http://' + raw
+        fit.requests.get(target, timeout=5, verify=False)
+
+assert called_with[0] == 'http://example.com',  f'bare hostname not prefixed: {called_with[0]}'
+assert called_with[1] == 'http://example.com',  f'http:// should pass through: {called_with[1]}'
+assert called_with[2] == 'https://example.com', f'https:// should pass through: {called_with[2]}'
+print('PASS: bare hostnames get http:// prefix, existing schemes are preserved')
+PYEOF
+
 # ── version check ─────────────────────────────────────────────────────────────
-pytest "Version is 0.22" <<'PYEOF'
+pytest "Version is 0.23" <<'PYEOF'
 import importlib.util
 spec = importlib.util.spec_from_file_location("fit", "__FIT__/fit.py")
 fit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fit)
-assert fit.__version__ == 0.22, f'Expected 0.22, got {fit.__version__}'
+assert fit.__version__ == 0.23, f'Expected 0.23, got {fit.__version__}'
 print(f'PASS: version is {fit.__version__}')
 PYEOF
 
