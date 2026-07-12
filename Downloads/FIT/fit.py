@@ -30,7 +30,7 @@ BASE_DIR = Path(__file__).parent
 # disable warnings in requests for cert bypass
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-__version__ = 0.22
+__version__ = 0.23
 
 # some console colours
 W = '\033[0m'  # white (normal)
@@ -538,15 +538,16 @@ def _appctrl(verbose=False):
     responded = failed = 0
     with _progress(data, verbose) as urls:
         for url in urls:
+            target = url if url.startswith(("http://", "https://")) else "http://" + url
             try:
-                requests.get(url, timeout=1)
+                requests.get(target, timeout=5, verify=False)
                 responded += 1
                 if verbose:
-                    print(G + "  [SENT]   " + W + url)
+                    print(G + "  [SENT]   " + W + target)
             except (requests.exceptions.RequestException, OSError):
                 failed += 1
                 if verbose:
-                    print(O + "  [FAILED] " + W + url)
+                    print(O + "  [FAILED] " + W + target)
     _print_summary("App Control", responded, failed)
 
 
@@ -571,15 +572,16 @@ def _wf(verbose=False):
     responded = failed = 0
     with _progress(data, verbose) as urls:
         for url in urls:
+            target = url if url.startswith(("http://", "https://")) else "http://" + url
             try:
-                requests.get(url, timeout=1)
+                requests.get(target, timeout=5, verify=False)
                 responded += 1
                 if verbose:
-                    print(G + "  [SENT]   " + W + url)
+                    print(G + "  [SENT]   " + W + target)
             except (requests.exceptions.RequestException, OSError):
                 failed += 1
                 if verbose:
-                    print(O + "  [FAILED] " + W + url)
+                    print(O + "  [FAILED] " + W + target)
     _print_summary("URL Filtering", responded, failed)
 
 
@@ -603,7 +605,7 @@ def _webtraffic(verbose=False):
     responded = failed = 0
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, ignore_default_args=["--disable-extensions"], args=["--ignore-certificate-errors"])
             page = browser.new_page()
             page.set_default_navigation_timeout(10000)
 
