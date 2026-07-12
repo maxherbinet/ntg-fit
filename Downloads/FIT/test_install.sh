@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # FIT smoke-test installer — covers all improvements (steps 1, 2, 4, 5, 6)
 # Usage (one-liner):
-#   bash <(curl -fsSL https://raw.githubusercontent.com/maxherbinet/ntg-fit/claude/project-overview-i9dw1p/Downloads/FIT/test_install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/maxherbinet/ntg-fit/main/Downloads/FIT/test_install.sh)
 
 set -e
 
 REPO="https://github.com/maxherbinet/ntg-fit.git"
-BRANCH="claude/project-overview-i9dw1p"
+BRANCH="main"
 WORKDIR="$HOME/ntg-fit-test"
 FIT="$WORKDIR/Downloads/FIT"
 
