@@ -30,7 +30,7 @@ BASE_DIR = Path(__file__).parent
 # disable warnings in requests for cert bypass
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-__version__ = 0.21
+__version__ = 0.22
 
 # some console colours
 W = '\033[0m'  # white (normal)
@@ -148,6 +148,95 @@ def _vt_report(items, vt_key, is_url=False):
             print(f"  {G}[VT CLEAN  ]{W}  {item}  (0/{total} — likely stale IOC)")
         else:
             print(f"  {R}[VT {mal:>3}/{total:<3}]{W}  {item}  <- active threat, firewall gap!")
+
+
+# ── Granular HTTP probe ───────────────────────────────────────────────────────
+
+# colour / label / is_network_blocked / payload_reached
+_PROBE_VERDICT = {
+    'dns_block':   (G, '[DNS BLOCK]   ', True,  False),
+    'tcp_block':   (G, '[TCP BLOCK]   ', True,  False),
+    'tcp_timeout': (G, '[TCP TIMEOUT] ', True,  False),
+    'http_block':  (G, '[HTTP BLOCK]  ', True,  False),
+    'read_timeout':(O, '[DISCONNECTED]', False, False),
+    'no_data':     (O, '[DISCONNECTED]', False, False),
+    'partial':     (O, '[PARTIAL DL]  ', False, True),
+    'downloaded':  (R, '[NOT BLOCKED] ', False, True),
+    'error':       (O, '[ERROR]       ', False, False),
+}
+
+_PROBE_READ_SIZE = 8192  # bytes — enough to carry any PE/ELF magic for AV inspection
+
+
+def _probe_url(url, srcip=()):
+    """
+    Send a streaming HTTP GET and read up to 8 KB of the response body.
+    Returns (verdict_key, http_status_or_None, bytes_received).
+
+    Verdict semantics
+    -----------------
+    dns_block   : DNS resolution failed (domain blocked or dead)
+    tcp_block   : TCP connect refused / RST received
+    tcp_timeout : TCP connect timed out (firewall drop)
+    http_block  : HTTP 403/407 received (proxy block page)
+    no_data     : HTTP response received but 0 bytes of body
+    partial     : 1 – 8191 bytes received (server or proxy cut stream early)
+    downloaded  : ≥ 8 KB received (payload flowing past the firewall)
+    read_timeout: HTTP headers received but body read timed out
+    error       : other unexpected exception
+    """
+    try:
+        if srcip:
+            r = setsrcip(srcip).get(url, timeout=(5, 10), stream=True, verify=False)
+        else:
+            r = requests.get(url, timeout=(5, 10), stream=True, verify=False)
+
+        http_status = r.status_code
+        try:
+            chunk = r.raw.read(_PROBE_READ_SIZE)
+            received = len(chunk)
+        except Exception:
+            received = 0
+        finally:
+            r.close()
+
+        if http_status in (403, 407):
+            return 'http_block', http_status, received
+        if received >= _PROBE_READ_SIZE:
+            return 'downloaded', http_status, received
+        if received > 0:
+            return 'partial', http_status, received
+        return 'no_data', http_status, received
+
+    except requests.exceptions.ConnectTimeout:
+        return 'tcp_timeout', None, 0
+
+    except requests.exceptions.ReadTimeout:
+        return 'read_timeout', None, 0
+
+    except requests.exceptions.ConnectionError as e:
+        err = str(e).lower()
+        if any(x in err for x in [
+            'getaddrinfo', 'name or service not known', 'nodename nor servname',
+            'name resolution', 'temporary failure in name', 'errno 8',
+        ]):
+            return 'dns_block', None, 0
+        return 'tcp_block', None, 0
+
+    except (requests.exceptions.RequestException, OSError):
+        return 'error', None, 0
+
+
+def _print_threat_summary(label, blocked, reached, ambiguous):
+    total = blocked + reached + ambiguous
+    parts = (
+        G + "[+] " + W + f"{label} summary: {total} tested — "
+        + G + f"{blocked} blocked" + W + ", "
+        + R + f"{reached} reached server" + W
+    )
+    if ambiguous:
+        parts += ", " + O + f"{ambiguous} disconnected/ambiguous" + W
+    print(parts)
 
 
 def _update():
@@ -356,24 +445,26 @@ def _vxvault(srcip, verbose=False, limit=100, vt_key=None):
         print(R + "[!] " + W + "VXVault list is empty — check feed URL or network")
         return
 
-    responded = failed = 0
+    blocked = reached = ambiguous = 0
     not_blocked = []
     with _progress(data, verbose) as urls:
         for url in urls:
-            try:
-                if len(srcip) > 0:
-                    setsrcip(srcip).get(url, timeout=1)
-                else:
-                    requests.get(url, timeout=1)
-                responded += 1
+            verdict, status, nbytes = _probe_url(url, srcip)
+            color, label, is_blocked, is_reached = _PROBE_VERDICT.get(
+                verdict, (O, '[UNKNOWN]     ', False, False)
+            )
+            if is_blocked:
+                blocked += 1
+            elif is_reached:
+                reached += 1
                 not_blocked.append(url)
-                if verbose:
-                    print(R + "  [NOT BLOCKED] " + W + url)
-            except (requests.exceptions.RequestException, OSError):
-                failed += 1
-                if verbose:
-                    print(G + "  [BLOCKED]     " + W + url)
-    _print_summary("VX Vault", responded, failed)
+            else:
+                ambiguous += 1
+            if verbose:
+                detail = f"  HTTP {status}" if status else ""
+                detail += f"  ({nbytes}B)" if nbytes else ""
+                print(f"  {color}{label}{W}  {url}{detail}")
+    _print_threat_summary("VX Vault", blocked, reached, ambiguous)
     _vt_report(not_blocked, vt_key, is_url=True)
 
 
@@ -402,25 +493,27 @@ def _malwareurls(srcip, verbose=False, limit=100, vt_key=None):
 
     data = _sample([line for line in lines.split("\n") if line.strip()], limit)
 
-    responded = failed = 0
+    blocked = reached = ambiguous = 0
     not_blocked = []
     with _progress(data, verbose) as urls:
         for url in urls:
             target = url if url.startswith(("http://", "https://")) else "http://" + url
-            try:
-                if len(srcip) > 0:
-                    setsrcip(srcip).get(target, timeout=1)
-                else:
-                    requests.get(target, timeout=1)
-                responded += 1
+            verdict, status, nbytes = _probe_url(target, srcip)
+            color, label, is_blocked, is_reached = _PROBE_VERDICT.get(
+                verdict, (O, '[UNKNOWN]     ', False, False)
+            )
+            if is_blocked:
+                blocked += 1
+            elif is_reached:
+                reached += 1
                 not_blocked.append(target)
-                if verbose:
-                    print(R + "  [NOT BLOCKED] " + W + target)
-            except (requests.exceptions.RequestException, OSError):
-                failed += 1
-                if verbose:
-                    print(G + "  [BLOCKED]     " + W + target)
-    _print_summary("Malware URLs", responded, failed)
+            else:
+                ambiguous += 1
+            if verbose:
+                detail = f"  HTTP {status}" if status else ""
+                detail += f"  ({nbytes}B)" if nbytes else ""
+                print(f"  {color}{label}{W}  {target}{detail}")
+    _print_threat_summary("Malware URLs", blocked, reached, ambiguous)
     _vt_report(not_blocked, vt_key, is_url=True)
 
 
