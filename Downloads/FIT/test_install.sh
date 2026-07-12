@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # FIT smoke-test installer — covers all improvements (steps 1, 2, 4, 5, 6)
 # Usage (one-liner):
-#   bash <(curl -fsSL https://raw.githubusercontent.com/maxherbinet/ntg-fit/claude/project-overview-i9dw1p/Downloads/FIT/test_install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/maxherbinet/ntg-fit/main/Downloads/FIT/test_install.sh)
 
 set -e
 
 REPO="https://github.com/maxherbinet/ntg-fit.git"
-BRANCH="claude/project-overview-i9dw1p"
+BRANCH="main"
 WORKDIR="$HOME/ntg-fit-test"
 FIT="$WORKDIR/Downloads/FIT"
 
@@ -222,13 +222,80 @@ assert 'http://hostname.com' in visited and 'http://full-url.com/path' in visite
 print('PASS: _malwareurls handles hostname-only and full-URL formats')
 PYEOF
 
+# ── Step 7: --limit sampling + VirusTotal integration ────────────────────────
+pytest "Step 7 — --limit sampling + VirusTotal integration" <<'PYEOF'
+import importlib.util, io, contextlib, unittest.mock
+spec = importlib.util.spec_from_file_location("fit", "__FIT__/fit.py")
+fit = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fit)
+
+# --limit and --vt-key present on all threat commands
+for cmd_name in ['iprep', 'vxvault', 'malwareurls', 'all']:
+    names = [p.name for p in fit.cli.commands[cmd_name].params]
+    assert 'limit'  in names, f'{cmd_name} missing --limit'
+    assert 'vt_key' in names, f'{cmd_name} missing --vt-key'
+print('PASS: --limit and --vt-key present on iprep, vxvault, malwareurls, all')
+
+# _sample: respects limit and returns a subset
+data = list(range(500))
+result = fit._sample(data, 100)
+assert len(result) == 100 and set(result).issubset(set(data))
+print('PASS: _sample returns correct count within original set')
+
+# _sample: limit=0 returns all
+assert fit._sample(data, 0) == data
+print('PASS: _sample with limit=0 returns all entries')
+
+# _vt_report: no-op when vt_key is None
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    fit._vt_report(['1.2.3.4'], None, is_url=False)
+assert buf.getvalue() == ''
+print('PASS: _vt_report is a no-op when vt_key is None')
+
+# _vt_report: calls VT API and labels active threats
+vt_response = {
+    "data": {"attributes": {"last_analysis_stats": {
+        "malicious": 12, "suspicious": 2, "undetected": 50, "harmless": 20, "timeout": 0
+    }}}
+}
+mock_resp = unittest.mock.Mock()
+mock_resp.status_code = 200
+mock_resp.raise_for_status = unittest.mock.Mock()
+mock_resp.json = lambda: vt_response
+
+fit._vt_last_call = 0.0
+buf = io.StringIO()
+with unittest.mock.patch.object(fit.requests, 'get', return_value=mock_resp):
+    with contextlib.redirect_stdout(buf):
+        fit._vt_report(['http://evil.com/malware'], 'fake-key', is_url=True)
+out = buf.getvalue()
+assert '12/' in out and 'active threat' in out
+print('PASS: _vt_report calls VT API and labels active threats correctly')
+
+# _vt_report: clean result labelled as stale IOC
+vt_clean = {
+    "data": {"attributes": {"last_analysis_stats": {
+        "malicious": 0, "suspicious": 0, "undetected": 80, "harmless": 7, "timeout": 0
+    }}}
+}
+mock_resp.json = lambda: vt_clean
+fit._vt_last_call = 0.0
+buf = io.StringIO()
+with unittest.mock.patch.object(fit.requests, 'get', return_value=mock_resp):
+    with contextlib.redirect_stdout(buf):
+        fit._vt_report(['http://old-ioc.com'], 'fake-key', is_url=True)
+assert 'stale IOC' in buf.getvalue()
+print('PASS: _vt_report labels 0-detection results as stale IOC')
+PYEOF
+
 # ── version check ─────────────────────────────────────────────────────────────
-pytest "Version is 0.20" <<'PYEOF'
+pytest "Version is 0.21" <<'PYEOF'
 import importlib.util
 spec = importlib.util.spec_from_file_location("fit", "__FIT__/fit.py")
 fit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fit)
-assert fit.__version__ == 0.20, f'Expected 0.20, got {fit.__version__}'
+assert fit.__version__ == 0.21, f'Expected 0.21, got {fit.__version__}'
 print(f'PASS: version is {fit.__version__}')
 PYEOF
 
@@ -239,9 +306,10 @@ echo ""
 warn "Network tests require this host to be behind your firewall:"
 echo ""
 echo "    source $WORKDIR/.venv/bin/activate"
-echo "    python3 $FIT/fit.py update              # refresh threat lists"
-echo "    python3 $FIT/fit.py iprep -v            # IP reputation (Feodo Tracker)"
-echo "    python3 $FIT/fit.py malwareurls -v      # malware URL blocking"
-echo "    python3 $FIT/fit.py webtraffic -v       # legitimate web traffic"
-echo "    python3 $FIT/fit.py all --no-repeat -v  # full run"
+echo "    python3 $FIT/fit.py update                          # refresh threat lists"
+echo "    python3 $FIT/fit.py iprep -v                       # IP reputation (Feodo Tracker)"
+echo "    python3 $FIT/fit.py malwareurls -v                  # malware URL blocking"
+echo "    python3 $FIT/fit.py webtraffic -v                   # legitimate web traffic"
+echo "    python3 $FIT/fit.py all --no-repeat -v              # full run (100 entries, no VT)"
+echo "    python3 $FIT/fit.py all --no-repeat -v --vt-key KEY # full run + VT enrichment"
 echo ""
