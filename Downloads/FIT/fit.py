@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import base64
 import click
-import requests
-import requests_toolbelt
-import warnings
-import socket
-import random
-import sys
 import csv
 import io
+import random
+import requests
+import requests_toolbelt
+import socket
+import sys
+import time
+import warnings
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,7 +30,7 @@ BASE_DIR = Path(__file__).parent
 # disable warnings in requests for cert bypass
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-__version__ = 0.20
+__version__ = 0.21
 
 # some console colours
 W = '\033[0m'  # white (normal)
@@ -90,6 +92,62 @@ def _read_csv(path):
     except OSError as e:
         print(R + "[!] " + W + f"Cannot read {path.name}: {e}")
         return None
+
+
+def _sample(data, limit):
+    """Return a random sample of data when limit > 0 and len(data) exceeds limit."""
+    if limit and len(data) > limit:
+        return random.sample(data, limit)
+    return data
+
+
+_vt_last_call = 0.0
+
+
+def _vt_check(indicator, vt_key, is_url=False):
+    """
+    Query VirusTotal v3 for an IP or URL.
+    Paces calls to stay within the free-tier limit (18 s between requests).
+    Returns (malicious_count, total_engines) or (None, None) on error.
+    """
+    global _vt_last_call
+    elapsed = time.time() - _vt_last_call
+    if _vt_last_call > 0 and elapsed < 18:
+        time.sleep(18 - elapsed)
+    try:
+        if is_url:
+            uid = base64.urlsafe_b64encode(indicator.encode()).decode().rstrip('=')
+            api_url = f"https://www.virustotal.com/api/v3/urls/{uid}"
+        else:
+            api_url = f"https://www.virustotal.com/api/v3/ip_addresses/{indicator}"
+        r = requests.get(api_url, headers={"x-apikey": vt_key}, timeout=10, verify=False)
+        _vt_last_call = time.time()
+        if r.status_code == 404:
+            return 0, 0
+        r.raise_for_status()
+        stats = r.json()["data"]["attributes"]["last_analysis_stats"]
+        mal   = stats.get("malicious", 0)
+        total = sum(stats.values())
+        return mal, total
+    except Exception:
+        _vt_last_call = time.time()
+        return None, None
+
+
+def _vt_report(items, vt_key, is_url=False):
+    """Run VT enrichment on a list of unblocked items; no-op when vt_key is None."""
+    if not items or not vt_key:
+        return
+    print()
+    print(G + "[+] " + W + f"VirusTotal enrichment — {len(items)} unblocked item(s):")
+    for item in items:
+        mal, total = _vt_check(item, vt_key, is_url=is_url)
+        if mal is None:
+            print(f"  {O}[VT ERROR  ]{W}  {item}")
+        elif mal == 0:
+            print(f"  {G}[VT CLEAN  ]{W}  {item}  (0/{total} — likely stale IOC)")
+        else:
+            print(f"  {R}[VT {mal:>3}/{total:<3}]{W}  {item}  <- active threat, firewall gap!")
 
 
 def _update():
@@ -199,16 +257,19 @@ def cli():
 @click.option('--repeat/--no-repeat', default=False)
 @click.option('--verbose', '-v', is_flag=True, default=False, help='Show each request result')
 @click.option('--srcip', '-s', multiple=True)
-def all(repeat, verbose, srcip):
-    '''Run all test one after the other'''
+@click.option('--limit', '-l', default=100, help='Max entries per threat test, randomly sampled (0 = all)')
+@click.option('--vt-key', envvar='VT_API_KEY', default=None,
+              help='VirusTotal API key — enriches unblocked results after the test loop')
+def all(repeat, verbose, srcip, limit, vt_key):
+    '''Run all tests one after the other'''
     checkips(srcip)
     if repeat:
         print(G + "[+] " + W + "Repeat, repeat, repeat...")
 
     while True:
-        _iprep(srcip, verbose)
-        _vxvault(srcip, verbose)
-        _malwareurls(srcip, verbose)
+        _iprep(srcip, verbose, limit, vt_key)
+        _vxvault(srcip, verbose, limit, vt_key)
+        _malwareurls(srcip, verbose, limit, vt_key)
         _appctrl(verbose)
         _wf(verbose)
         _webtraffic(verbose)
@@ -219,13 +280,15 @@ def all(repeat, verbose, srcip):
 @cli.command()
 @click.option('--verbose', '-v', is_flag=True, default=False, help='Show each request result')
 @click.option('--srcip', '-s', multiple=True)
-def iprep(verbose, srcip):
+@click.option('--limit', '-l', default=100, help='Max entries to test, randomly sampled (0 = all)')
+@click.option('--vt-key', envvar='VT_API_KEY', default=None, help='VirusTotal API key')
+def iprep(verbose, srcip, limit, vt_key):
     '''IP Reputation test using Feodo Tracker botnet C2 blocklist'''
     checkips(srcip)
-    _iprep(srcip, verbose)
+    _iprep(srcip, verbose, limit, vt_key)
 
 
-def _iprep(srcip, verbose=False):
+def _iprep(srcip, verbose=False, limit=100, vt_key=None):
     '''IP Reputation test using Feodo Tracker botnet C2 IP blocklist'''
     # https://feodotracker.abuse.ch/downloads/ipblocklist.txt
     print(G + "[+] " + W + "IP Reputation Test")
@@ -235,17 +298,22 @@ def _iprep(srcip, verbose=False):
         return
     print("Done")
 
-    data = [line for line in r.text.split("\n") if len(line) > 1 and line[0] != "#"]
+    data = _sample(
+        [line for line in r.text.split("\n") if len(line) > 1 and line[0] != "#"],
+        limit
+    )
     if not data:
         print(R + "[!] " + W + "IP blocklist is empty — check feed URL or network")
         return
 
     responded = failed = 0
+    not_blocked = []
     with _progress(data, verbose) as ips:
         for ip in ips:
             try:
                 telnetlib.Telnet(ip, 443, 1)
                 responded += 1
+                not_blocked.append(ip)
                 if verbose:
                     print(R + "  [NOT BLOCKED] " + W + ip + ":443")
             except (socket.timeout, socket.error, ConnectionRefusedError, EOFError):
@@ -253,18 +321,21 @@ def _iprep(srcip, verbose=False):
                 if verbose:
                     print(G + "  [BLOCKED]     " + W + ip + ":443")
     _print_summary("IP Reputation", responded, failed)
+    _vt_report(not_blocked, vt_key, is_url=False)
 
 
 @cli.command()
 @click.option('--verbose', '-v', is_flag=True, default=False, help='Show each request result')
 @click.option('--srcip', '-s', multiple=True)
-def vxvault(verbose, srcip):
+@click.option('--limit', '-l', default=100, help='Max entries to test, randomly sampled (0 = all)')
+@click.option('--vt-key', envvar='VT_API_KEY', default=None, help='VirusTotal API key')
+def vxvault(verbose, srcip, limit, vt_key):
     '''Malware samples download from vxvault'''
     checkips(srcip)
-    _vxvault(srcip, verbose)
+    _vxvault(srcip, verbose, limit, vt_key)
 
 
-def _vxvault(srcip, verbose=False):
+def _vxvault(srcip, verbose=False, limit=100, vt_key=None):
     '''Malware samples download from vxvault'''
     # http://vxvault.net/URL_List.php
     print(G + "[+] " + W + "VX Vault Malware Downloads")
@@ -277,12 +348,16 @@ def _vxvault(srcip, verbose=False):
     if len(srcip) > 0:
         print(G + "[+] " + W + "Multi source IP mode enabled")
 
-    data = [line for line in r.text.split("\r\n") if len(line) > 1 and line[0] == "h"]
+    data = _sample(
+        [line for line in r.text.split("\r\n") if len(line) > 1 and line[0] == "h"],
+        limit
+    )
     if not data:
         print(R + "[!] " + W + "VXVault list is empty — check feed URL or network")
         return
 
     responded = failed = 0
+    not_blocked = []
     with _progress(data, verbose) as urls:
         for url in urls:
             try:
@@ -291,6 +366,7 @@ def _vxvault(srcip, verbose=False):
                 else:
                     requests.get(url, timeout=1)
                 responded += 1
+                not_blocked.append(url)
                 if verbose:
                     print(R + "  [NOT BLOCKED] " + W + url)
             except (requests.exceptions.RequestException, OSError):
@@ -298,18 +374,21 @@ def _vxvault(srcip, verbose=False):
                 if verbose:
                     print(G + "  [BLOCKED]     " + W + url)
     _print_summary("VX Vault", responded, failed)
+    _vt_report(not_blocked, vt_key, is_url=True)
 
 
 @cli.command()
 @click.option('--verbose', '-v', is_flag=True, default=False, help='Show each request result')
 @click.option('--srcip', '-s', multiple=True)
-def malwareurls(verbose, srcip):
+@click.option('--limit', '-l', default=100, help='Max entries to test, randomly sampled (0 = all)')
+@click.option('--vt-key', envvar='VT_API_KEY', default=None, help='VirusTotal API key')
+def malwareurls(verbose, srcip, limit, vt_key):
     '''Malware URL/Domain test'''
     checkips(srcip)
-    _malwareurls(srcip, verbose)
+    _malwareurls(srcip, verbose, limit, vt_key)
 
 
-def _malwareurls(srcip, verbose=False):
+def _malwareurls(srcip, verbose=False, limit=100, vt_key=None):
     '''Malware URL/Domain test'''
     print(G + "[+] " + W + "Malware URL Downloads")
     print(G + "[+] " + W + "Fetching Malware URL list...", end=" ", flush=True)
@@ -321,9 +400,10 @@ def _malwareurls(srcip, verbose=False):
     if len(srcip) > 0:
         print(G + "[+] " + W + "Multi source IP mode enabled")
 
-    data = [line for line in lines.split("\n") if line.strip()]
+    data = _sample([line for line in lines.split("\n") if line.strip()], limit)
 
     responded = failed = 0
+    not_blocked = []
     with _progress(data, verbose) as urls:
         for url in urls:
             target = url if url.startswith(("http://", "https://")) else "http://" + url
@@ -333,6 +413,7 @@ def _malwareurls(srcip, verbose=False):
                 else:
                     requests.get(target, timeout=1)
                 responded += 1
+                not_blocked.append(target)
                 if verbose:
                     print(R + "  [NOT BLOCKED] " + W + target)
             except (requests.exceptions.RequestException, OSError):
@@ -340,6 +421,7 @@ def _malwareurls(srcip, verbose=False):
                 if verbose:
                     print(G + "  [BLOCKED]     " + W + target)
     _print_summary("Malware URLs", responded, failed)
+    _vt_report(not_blocked, vt_key, is_url=True)
 
 
 @cli.command()
