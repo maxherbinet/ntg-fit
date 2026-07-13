@@ -518,19 +518,19 @@ with unittest.mock.patch.object(fit.requests, 'post', return_value=fake_resp) as
     fit._post_gist('content', 'fake-token')
 assert mock_post.called, '_post_gist should call requests.post'
 payload = mock_post.call_args[1]['json']
-assert payload['public'] is False, 'Gist must be secret (public=False)'
+assert payload['public'] is True, 'Gist must be public so Claude can fetch it'
 assert any('gist.github.com' in str(m) for m in posted), 'URL should be printed'
 
 print('PASS: _strip_ansi, _Tee, and _post_gist all behave correctly')
 PYEOF
 
 # ── version check ─────────────────────────────────────────────────────────────
-pytest "Version is 0.26" <<'PYEOF'
+pytest "Version is 0.27" <<'PYEOF'
 import importlib.util
 spec = importlib.util.spec_from_file_location("fit", "__FIT__/fit.py")
 fit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fit)
-assert fit.__version__ == 0.26, f'Expected 0.26, got {fit.__version__}'
+assert fit.__version__ == 0.27, f'Expected 0.27, got {fit.__version__}'
 print(f'PASS: version is {fit.__version__}')
 PYEOF
 
