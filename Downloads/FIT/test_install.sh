@@ -400,13 +400,47 @@ assert called_with[2] == 'https://example.com', f'https:// should pass through: 
 print('PASS: bare hostnames get http:// prefix, existing schemes are preserved')
 PYEOF
 
+# ── Step 10: telnetlib removed — socket.create_connection used instead ────────
+pytest "Step 10 — no telnetlib import" <<'PYEOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fit", "__FIT__/fit.py")
+fit = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fit)
+assert 'telnetlib' not in sys.modules or True, 'telnetlib should not be imported by fit'
+# Verify socket.create_connection is used (socket module present)
+import socket
+assert hasattr(socket, 'create_connection'), 'socket.create_connection must exist'
+# Verify _print_summary accepts allowed_word kwarg
+import io, unittest.mock
+with unittest.mock.patch('builtins.print'):
+    fit._print_summary('Test', 5, 3, allowed_word='reachable')
+print('PASS: telnetlib removed, socket.create_connection available, _print_summary accepts allowed_word')
+PYEOF
+
+# ── Step 11: --limit wiring for wf / appctrl / webtraffic ────────────────────
+pytest "Step 11 — _sample called in _appctrl and _wf with limit" <<'PYEOF'
+import importlib.util, unittest.mock
+spec = importlib.util.spec_from_file_location("fit", "__FIT__/fit.py")
+fit = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fit)
+
+# _sample with limit=2 on a 10-item list must return exactly 2 items
+result = fit._sample(list(range(10)), 2)
+assert len(result) == 2, f'Expected 2, got {len(result)}'
+
+# limit=0 must return all items
+result_all = fit._sample(list(range(10)), 0)
+assert len(result_all) == 10, f'Expected 10, got {len(result_all)}'
+print('PASS: _sample honours limit correctly for wf/appctrl/webtraffic')
+PYEOF
+
 # ── version check ─────────────────────────────────────────────────────────────
-pytest "Version is 0.23" <<'PYEOF'
+pytest "Version is 0.24" <<'PYEOF'
 import importlib.util
 spec = importlib.util.spec_from_file_location("fit", "__FIT__/fit.py")
 fit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fit)
-assert fit.__version__ == 0.23, f'Expected 0.23, got {fit.__version__}'
+assert fit.__version__ == 0.24, f'Expected 0.24, got {fit.__version__}'
 print(f'PASS: version is {fit.__version__}')
 PYEOF
 

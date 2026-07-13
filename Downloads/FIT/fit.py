@@ -11,15 +11,9 @@ import requests_toolbelt
 import socket
 import sys
 import time
-import warnings
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
-
-# telnetlib is deprecated in Python 3.11 and removed in 3.13
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", DeprecationWarning)
-    import telnetlib
 
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
@@ -30,7 +24,7 @@ BASE_DIR = Path(__file__).parent
 # disable warnings in requests for cert bypass
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-__version__ = 0.23
+__version__ = 0.24
 
 # some console colours
 W = '\033[0m'  # white (normal)
@@ -63,11 +57,11 @@ def _progress(items, verbose):
             yield bar
 
 
-def _print_summary(label, responded, failed):
+def _print_summary(label, responded, failed, allowed_word="allowed"):
     total = responded + failed
     print(
         G + "[+] " + W + f"{label} summary: {total} tested — "
-        + G + f"{responded} allowed" + W + ", "
+        + G + f"{responded} {allowed_word}" + W + ", "
         + R + f"{failed} blocked/failed" + W
     )
 
@@ -359,9 +353,9 @@ def all(repeat, verbose, srcip, limit, vt_key):
         _iprep(srcip, verbose, limit, vt_key)
         _vxvault(srcip, verbose, limit, vt_key)
         _malwareurls(srcip, verbose, limit, vt_key)
-        _appctrl(verbose)
-        _wf(verbose)
-        _webtraffic(verbose)
+        _appctrl(verbose, limit)
+        _wf(verbose, limit)
+        _webtraffic(verbose, limit)
         if not repeat:
             break
 
@@ -400,16 +394,17 @@ def _iprep(srcip, verbose=False, limit=100, vt_key=None):
     with _progress(data, verbose) as ips:
         for ip in ips:
             try:
-                telnetlib.Telnet(ip, 443, 1)
+                with socket.create_connection((ip, 443), timeout=1):
+                    pass
                 responded += 1
                 not_blocked.append(ip)
                 if verbose:
                     print(R + "  [NOT BLOCKED] " + W + ip + ":443")
-            except (socket.timeout, socket.error, ConnectionRefusedError, EOFError):
+            except OSError:
                 failed += 1
                 if verbose:
                     print(G + "  [BLOCKED]     " + W + ip + ":443")
-    _print_summary("IP Reputation", responded, failed)
+    _print_summary("IP Reputation", responded, failed, allowed_word="reachable")
     _vt_report(not_blocked, vt_key, is_url=False)
 
 
@@ -519,12 +514,13 @@ def _malwareurls(srcip, verbose=False, limit=100, vt_key=None):
 
 @cli.command()
 @click.option('--verbose', '-v', is_flag=True, default=False, help='Show each request result')
-def appctrl(verbose):
+@click.option('--limit', '-l', default=0, help='Max entries to test, randomly sampled (0 = all)')
+def appctrl(verbose, limit):
     '''Trigger application control'''
-    _appctrl(verbose)
+    _appctrl(verbose, limit)
 
 
-def _appctrl(verbose=False):
+def _appctrl(verbose=False, limit=0):
     '''Trigger application control'''
     print(G + "[+] " + W + "Application Control")
     print(G + "[+] " + W + "Fetching AppCtrl list...", end=" ", flush=True)
@@ -533,7 +529,7 @@ def _appctrl(verbose=False):
         return
     print("Done")
 
-    data = [line for line in lines.split("\n") if line.strip()]
+    data = _sample([line for line in lines.split("\n") if line.strip()], limit)
 
     responded = failed = 0
     with _progress(data, verbose) as urls:
@@ -553,12 +549,13 @@ def _appctrl(verbose=False):
 
 @cli.command()
 @click.option('--verbose', '-v', is_flag=True, default=False, help='Show each request result')
-def wf(verbose):
+@click.option('--limit', '-l', default=0, help='Max entries to test, randomly sampled (0 = all)')
+def wf(verbose, limit):
     '''URL categorisation trigger'''
-    _wf(verbose)
+    _wf(verbose, limit)
 
 
-def _wf(verbose=False):
+def _wf(verbose=False, limit=0):
     '''URL categorisation trigger'''
     print(G + "[+] " + W + "WF categorisation trigger")
     print(G + "[+] " + W + "Fetching URL list...", end=" ", flush=True)
@@ -567,7 +564,7 @@ def _wf(verbose=False):
         return
     print("Done")
 
-    data = [line for line in lines.split("\n") if line.strip()]
+    data = _sample([line for line in lines.split("\n") if line.strip()], limit)
 
     responded = failed = 0
     with _progress(data, verbose) as urls:
@@ -587,12 +584,13 @@ def _wf(verbose=False):
 
 @cli.command()
 @click.option('--verbose', '-v', is_flag=True, default=False, help='Show each request result')
-def webtraffic(verbose):
+@click.option('--limit', '-l', default=100, help='Max entries to test, randomly sampled (0 = all)')
+def webtraffic(verbose, limit):
     '''Generate good web traffic'''
-    _webtraffic(verbose)
+    _webtraffic(verbose, limit)
 
 
-def _webtraffic(verbose=False):
+def _webtraffic(verbose=False, limit=100):
     print(G + "[+] " + W + "Web traffic trigger")
     print(G + "[+] " + W + "Fetching traffic list...", end=" ", flush=True)
     lines = _read_csv(BASE_DIR / "goodurl.csv")
@@ -600,7 +598,7 @@ def _webtraffic(verbose=False):
         return
     print("Done")
 
-    data = [line for line in lines.split("\n") if line.strip()]
+    data = _sample([line for line in lines.split("\n") if line.strip()], limit)
 
     responded = failed = 0
     try:
