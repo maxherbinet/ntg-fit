@@ -67,7 +67,7 @@ def _print_summary(label, responded, failed):
     total = responded + failed
     print(
         G + "[+] " + W + f"{label} summary: {total} tested — "
-        + G + f"{responded} responded" + W + ", "
+        + G + f"{responded} allowed" + W + ", "
         + R + f"{failed} blocked/failed" + W
     )
 
@@ -543,11 +543,11 @@ def _appctrl(verbose=False):
                 requests.get(target, timeout=5, verify=False)
                 responded += 1
                 if verbose:
-                    print(G + "  [SENT]   " + W + target)
+                    print(G + "  [ALLOWED] " + W + target)
             except (requests.exceptions.RequestException, OSError):
                 failed += 1
                 if verbose:
-                    print(O + "  [FAILED] " + W + target)
+                    print(O + "  [BLOCKED] " + W + target)
     _print_summary("App Control", responded, failed)
 
 
@@ -577,11 +577,11 @@ def _wf(verbose=False):
                 requests.get(target, timeout=5, verify=False)
                 responded += 1
                 if verbose:
-                    print(G + "  [SENT]   " + W + target)
+                    print(G + "  [ALLOWED] " + W + target)
             except (requests.exceptions.RequestException, OSError):
                 failed += 1
                 if verbose:
-                    print(O + "  [FAILED] " + W + target)
+                    print(O + "  [BLOCKED] " + W + target)
     _print_summary("URL Filtering", responded, failed)
 
 
