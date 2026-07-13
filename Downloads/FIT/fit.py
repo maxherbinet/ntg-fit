@@ -25,7 +25,7 @@ BASE_DIR = Path(__file__).parent
 # disable warnings in requests for cert bypass
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-__version__ = 0.26
+__version__ = 0.27
 
 _GITHUB_RAW = (
     "https://raw.githubusercontent.com/maxherbinet/ntg-fit/main/Downloads/FIT/fit.py"
@@ -79,7 +79,7 @@ def _post_gist(content, gh_token):
             },
             json={
                 "description": f"FIT v{__version__:.2f} — {time.strftime('%Y-%m-%d %H:%M')}",
-                "public": False,
+                "public": True,
                 "files": {filename: {"content": clean}},
             },
             timeout=10,
