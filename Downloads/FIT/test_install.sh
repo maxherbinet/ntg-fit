@@ -434,13 +434,58 @@ assert len(result_all) == 10, f'Expected 10, got {len(result_all)}'
 print('PASS: _sample honours limit correctly for wf/appctrl/webtraffic')
 PYEOF
 
+# ── Step 12: self-update helpers ─────────────────────────────────────────────
+pytest "Step 12 — _check_update and selfupdate command" <<'PYEOF'
+import importlib.util, unittest.mock, pathlib, tempfile, shutil
+spec = importlib.util.spec_from_file_location("fit", "__FIT__/fit.py")
+fit = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fit)
+
+# _check_update: prints notice when remote version is higher
+printed = []
+fake_resp = unittest.mock.Mock()
+fake_resp.status_code = 200
+fake_resp.text = '__version__ = 99.99\n'
+
+with unittest.mock.patch.object(fit.requests, 'get', return_value=fake_resp), \
+     unittest.mock.patch('builtins.print', side_effect=printed.append):
+    fit._check_update()
+
+assert any('99.99' in str(m) for m in printed), '_check_update should print update notice'
+
+# _check_update: silent when already up to date
+printed2 = []
+fake_same = unittest.mock.Mock()
+fake_same.status_code = 200
+fake_same.text = f'__version__ = {fit.__version__}\n'
+
+with unittest.mock.patch.object(fit.requests, 'get', return_value=fake_same), \
+     unittest.mock.patch('builtins.print', side_effect=printed2.append):
+    fit._check_update()
+
+assert not printed2, '_check_update should be silent when already up to date'
+
+# _check_update: silent on network error
+printed3 = []
+with unittest.mock.patch.object(fit.requests, 'get', side_effect=Exception('network')), \
+     unittest.mock.patch('builtins.print', side_effect=printed3.append):
+    fit._check_update()
+
+assert not printed3, '_check_update should be silent on network errors'
+
+# _GITHUB_RAW constant exists
+assert hasattr(fit, '_GITHUB_RAW') and 'ntg-fit' in fit._GITHUB_RAW
+
+print('PASS: _check_update detects updates, stays silent when current or on error')
+PYEOF
+
 # ── version check ─────────────────────────────────────────────────────────────
-pytest "Version is 0.24" <<'PYEOF'
+pytest "Version is 0.25" <<'PYEOF'
 import importlib.util
 spec = importlib.util.spec_from_file_location("fit", "__FIT__/fit.py")
 fit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fit)
-assert fit.__version__ == 0.24, f'Expected 0.24, got {fit.__version__}'
+assert fit.__version__ == 0.25, f'Expected 0.25, got {fit.__version__}'
 print(f'PASS: version is {fit.__version__}')
 PYEOF
 
@@ -452,6 +497,7 @@ warn "Network tests require this host to be behind your firewall:"
 echo ""
 echo "    source $WORKDIR/.venv/bin/activate"
 echo "    python3 $FIT/fit.py update                          # refresh threat lists"
+echo "    python3 $FIT/fit.py selfupdate                      # upgrade fit.py itself"
 echo "    python3 $FIT/fit.py iprep -v                       # IP reputation (Feodo Tracker)"
 echo "    python3 $FIT/fit.py malwareurls -v                  # malware URL blocking"
 echo "    python3 $FIT/fit.py webtraffic -v                   # legitimate web traffic"

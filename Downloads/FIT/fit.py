@@ -24,7 +24,11 @@ BASE_DIR = Path(__file__).parent
 # disable warnings in requests for cert bypass
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-__version__ = 0.24
+__version__ = 0.25
+
+_GITHUB_RAW = (
+    "https://raw.githubusercontent.com/maxherbinet/ntg-fit/main/Downloads/FIT/fit.py"
+)
 
 # some console colours
 W = '\033[0m'  # white (normal)
@@ -306,6 +310,26 @@ def checkconnection():
     return True
 
 
+def _check_update():
+    """Silently check GitHub for a newer fit.py; print one line if found."""
+    try:
+        r = requests.get(_GITHUB_RAW, timeout=3, verify=False)
+        if r.status_code != 200:
+            return
+        for line in r.text.splitlines():
+            if line.startswith("__version__"):
+                remote = float(line.split("=")[1].strip())
+                if remote > __version__:
+                    print(
+                        O + "[!] " + W
+                        + f"Update available: v{remote:.2f}  (you have v{__version__:.2f})"
+                        + "  →  run: python fit.py selfupdate"
+                    )
+                break
+    except Exception:
+        pass
+
+
 def checkips(srcip):
     for ipaddr in srcip:
         try:
@@ -334,6 +358,7 @@ def cli():
         print(R + "[!] " + W + "Network connection failed")
         print(R + "[!] " + W + "Please verify the network connection")
         sys.exit(1)
+    _check_update()
 
 
 @cli.command()
@@ -636,6 +661,55 @@ def _webtraffic(verbose=False, limit=100):
 def update():
     '''Refresh malware URL and good URL lists from public sources'''
     _update()
+
+
+@cli.command()
+def selfupdate():
+    '''Replace fit.py with the latest version from GitHub'''
+    script_path = Path(__file__).resolve()
+    print(G + "[+] " + W + f"Fetching latest fit.py from GitHub...")
+    try:
+        r = requests.get(_GITHUB_RAW, timeout=15, verify=False)
+        r.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(R + "[!] " + W + f"Download failed: {e}")
+        return
+
+    new_source = r.text
+
+    # Validate it is syntactically correct Python before touching anything
+    try:
+        compile(new_source, "fit.py", "exec")
+    except SyntaxError as e:
+        print(R + "[!] " + W + f"Downloaded file has a syntax error — aborting: {e}")
+        return
+
+    # Extract remote version
+    remote_version = None
+    for line in new_source.splitlines():
+        if line.startswith("__version__"):
+            try:
+                remote_version = float(line.split("=")[1].strip())
+            except ValueError:
+                pass
+            break
+
+    if remote_version is None:
+        print(R + "[!] " + W + "Could not read version from downloaded file — aborting")
+        return
+
+    if remote_version <= __version__:
+        print(G + "[+] " + W + f"Already up to date (v{__version__:.2f})")
+        return
+
+    # Back up current script then replace
+    backup_path = script_path.with_suffix(".py.bak")
+    script_path.rename(backup_path)
+    script_path.write_text(new_source)
+
+    print(G + "[+] " + W + f"Updated v{__version__:.2f} → v{remote_version:.2f}")
+    print(G + "[+] " + W + f"Backup saved to {backup_path.name}")
+    print(G + "[+] " + W + "Restart fit.py to use the new version")
 
 
 if __name__ == '__main__':
