@@ -479,13 +479,58 @@ assert hasattr(fit, '_GITHUB_RAW') and 'ntg-fit' in fit._GITHUB_RAW
 print('PASS: _check_update detects updates, stays silent when current or on error')
 PYEOF
 
+# ── Step 13: Gist capture helpers ────────────────────────────────────────────
+pytest "Step 13 — _strip_ansi and _post_gist" <<'PYEOF'
+import importlib.util, unittest.mock
+spec = importlib.util.spec_from_file_location("fit", "__FIT__/fit.py")
+fit = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fit)
+
+# _strip_ansi removes colour codes
+dirty  = '\033[32m[+]\033[0m hello\r world'
+result = fit._strip_ansi(dirty)
+assert '\033' not in result, 'ANSI codes should be removed'
+assert result.endswith('world'), f'CR collapse failed: {repr(result)}'
+
+# _Tee mirrors writes to both streams
+import io
+buf  = io.StringIO()
+real = io.StringIO()
+tee  = fit._Tee(real, buf)
+tee.write('hello')
+assert real.getvalue() == 'hello', 'Tee must write to real stream'
+assert buf.getvalue()  == 'hello', 'Tee must write to buffer'
+
+# _post_gist: warns when no token provided
+warned = []
+with unittest.mock.patch('builtins.print', side_effect=warned.append):
+    fit._post_gist('some content', None)
+assert any('token' in str(m).lower() or 'GITHUB_TOKEN' in str(m) for m in warned)
+
+# _post_gist: calls GitHub API when token is present and prints URL
+fake_resp = unittest.mock.Mock()
+fake_resp.status_code = 201
+fake_resp.json.return_value = {'html_url': 'https://gist.github.com/test123'}
+fake_resp.raise_for_status = lambda: None
+posted = []
+with unittest.mock.patch.object(fit.requests, 'post', return_value=fake_resp) as mock_post, \
+     unittest.mock.patch('builtins.print', side_effect=posted.append):
+    fit._post_gist('content', 'fake-token')
+assert mock_post.called, '_post_gist should call requests.post'
+payload = mock_post.call_args[1]['json']
+assert payload['public'] is False, 'Gist must be secret (public=False)'
+assert any('gist.github.com' in str(m) for m in posted), 'URL should be printed'
+
+print('PASS: _strip_ansi, _Tee, and _post_gist all behave correctly')
+PYEOF
+
 # ── version check ─────────────────────────────────────────────────────────────
-pytest "Version is 0.25" <<'PYEOF'
+pytest "Version is 0.26" <<'PYEOF'
 import importlib.util
 spec = importlib.util.spec_from_file_location("fit", "__FIT__/fit.py")
 fit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fit)
-assert fit.__version__ == 0.25, f'Expected 0.25, got {fit.__version__}'
+assert fit.__version__ == 0.26, f'Expected 0.26, got {fit.__version__}'
 print(f'PASS: version is {fit.__version__}')
 PYEOF
 
@@ -496,11 +541,10 @@ echo ""
 warn "Network tests require this host to be behind your firewall:"
 echo ""
 echo "    source $WORKDIR/.venv/bin/activate"
-echo "    python3 $FIT/fit.py update                          # refresh threat lists"
-echo "    python3 $FIT/fit.py selfupdate                      # upgrade fit.py itself"
-echo "    python3 $FIT/fit.py iprep -v                       # IP reputation (Feodo Tracker)"
-echo "    python3 $FIT/fit.py malwareurls -v                  # malware URL blocking"
-echo "    python3 $FIT/fit.py webtraffic -v                   # legitimate web traffic"
-echo "    python3 $FIT/fit.py all --no-repeat -v              # full run (100 entries, no VT)"
-echo "    python3 $FIT/fit.py all --no-repeat -v --vt-key KEY # full run + VT enrichment"
+echo "    python3 $FIT/fit.py update                               # refresh threat lists"
+echo "    python3 $FIT/fit.py selfupdate                           # upgrade fit.py itself"
+echo "    python3 $FIT/fit.py iprep -v                            # IP reputation"
+echo "    python3 $FIT/fit.py all --no-repeat -v                   # full run"
+echo "    python3 $FIT/fit.py all --no-repeat -v --gist \\         # full run + Gist report"
+echo "        --gh-token \$GITHUB_TOKEN"
 echo ""

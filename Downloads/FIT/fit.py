@@ -6,6 +6,7 @@ import click
 import csv
 import io
 import random
+import re
 import requests
 import requests_toolbelt
 import socket
@@ -24,11 +25,74 @@ BASE_DIR = Path(__file__).parent
 # disable warnings in requests for cert bypass
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-__version__ = 0.25
+__version__ = 0.26
 
 _GITHUB_RAW = (
     "https://raw.githubusercontent.com/maxherbinet/ntg-fit/main/Downloads/FIT/fit.py"
 )
+_GIST_API = "https://api.github.com/gists"
+
+# Module-level state for optional Gist capture
+_gist_buf = None
+_gist_token = None
+
+
+class _Tee:
+    """Write to both the real stdout and a capture buffer simultaneously."""
+    def __init__(self, real, buf):
+        self._real = real
+        self._buf = buf
+
+    def write(self, data):
+        self._real.write(data)
+        self._buf.write(data)
+
+    def flush(self):
+        self._real.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _strip_ansi(text):
+    """Remove ANSI colour codes and collapse progressbar carriage-return lines."""
+    text = re.sub(r'\x1b\[[0-9;]*[mK]', '', text)
+    lines = [seg.split('\r')[-1] for seg in text.split('\n')]
+    return '\n'.join(lines)
+
+
+def _post_gist(content, gh_token):
+    """Upload captured run output as a secret GitHub Gist and print the URL."""
+    if not gh_token:
+        print(O + "[!] " + W + "No GitHub token — set GITHUB_TOKEN or use --gh-token. Gist not uploaded.")
+        return
+    clean = _strip_ansi(content)
+    filename = f"fit_report_{time.strftime('%Y%m%d_%H%M%S')}.txt"
+    print(G + "[+] " + W + "Uploading results to GitHub Gist...", end=" ", flush=True)
+    try:
+        r = requests.post(
+            _GIST_API,
+            headers={
+                "Authorization": f"Bearer {gh_token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            json={
+                "description": f"FIT v{__version__:.2f} — {time.strftime('%Y-%m-%d %H:%M')}",
+                "public": False,
+                "files": {filename: {"content": clean}},
+            },
+            timeout=10,
+            verify=False,
+        )
+        r.raise_for_status()
+        url = r.json()["html_url"]
+        print("Done")
+        print(G + "[+] " + W + "Gist: " + C + url + W)
+        print(G + "[+] " + W + "Paste this URL into your Claude chat to share results.")
+    except Exception as e:
+        print()
+        print(R + "[!] " + W + f"Gist upload failed: {e}")
 
 # some console colours
 W = '\033[0m'  # white (normal)
@@ -350,7 +414,16 @@ def setsrcip(srcip):
 
 
 @click.group(chain=True)
-def cli():
+@click.option('--gist', is_flag=True, default=False,
+              help='Upload run output as a secret GitHub Gist; pair with -v for clean results')
+@click.option('--gh-token', envvar='GITHUB_TOKEN', default=None,
+              help='GitHub PAT with gist scope (or set GITHUB_TOKEN env var)')
+def cli(gist, gh_token):
+    global _gist_buf, _gist_token
+    if gist:
+        _gist_buf = io.StringIO()
+        _gist_token = gh_token
+        sys.stdout = _Tee(sys.stdout, _gist_buf)
     banner()
     if checkconnection():
         print(G + "[+] " + W + "Network connection is okay")
@@ -359,6 +432,17 @@ def cli():
         print(R + "[!] " + W + "Please verify the network connection")
         sys.exit(1)
     _check_update()
+
+
+@cli.result_callback()
+def _on_done(result, gist, gh_token):
+    global _gist_buf, _gist_token
+    if not gist or _gist_buf is None:
+        return
+    content = _gist_buf.getvalue()
+    sys.stdout = sys.__stdout__
+    _gist_buf = None
+    _post_gist(content, gh_token)
 
 
 @cli.command()
